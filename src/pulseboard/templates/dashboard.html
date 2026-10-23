@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pulseboard</title>
+<style>
+  :root {
+    --bg: #0a0d14;
+    --surface: #111624;
+    --rule: rgba(140, 160, 200, 0.14);
+    --ink: #e8ecf4;
+    --ink-dim: #8b95a8;
+    --ink-faint: #5a6478;
+    --up: #5fd3a6;
+    --down: #ff6b6b;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: var(--sans); -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 40px 24px 80px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 36px; }
+  h1 { font-size: 22px; letter-spacing: -0.02em; margin: 0; font-weight: 600; }
+  .live { font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em;
+          text-transform: uppercase; color: var(--ink-faint); display: flex; align-items: center; gap: 8px; }
+  .live__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-faint); }
+  .live[data-on="true"] .live__dot { background: var(--up); box-shadow: 0 0 10px var(--up); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 16px; margin-bottom: 28px; }
+  .card { background: var(--surface); border: 1px solid var(--rule); border-radius: 12px; padding: 18px; }
+  .card__label { font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em;
+                 text-transform: uppercase; color: var(--ink-faint); margin: 0 0 12px; }
+  .card__value { font-size: 30px; font-weight: 600; letter-spacing: -0.02em; margin: 0; }
+  .card__unit { font-size: 13px; color: var(--ink-dim); font-weight: 400; margin-left: 4px; }
+  .card__delta { font-family: var(--mono); font-size: 12px; margin: 8px 0 14px; }
+  .card__delta[data-trend="up"] { color: var(--up); }
+  .card__delta[data-trend="down"] { color: var(--down); }
+  .card__delta[data-trend="flat"] { color: var(--ink-faint); }
+  .spark { width: 100%; height: 40px; display: block; }
+  .panel { background: var(--surface); border: 1px solid var(--rule); border-radius: 12px;
+           padding: 22px; margin-bottom: 20px; }
+  .panel__title { font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em;
+                  text-transform: uppercase; color: var(--ink-faint); margin: 0 0 18px; }
+  .chart { width: 100%; height: auto; display: block; }
+  .chart__tick, .chart__axis { font-family: var(--mono); font-size: 10px; fill: var(--ink-faint); }
+  .bars { width: 100%; height: auto; display: block; }
+  .bars__label, .bars__value { font-family: var(--mono); font-size: 11px; fill: var(--ink-dim); }
+  .bars__value { fill: var(--ink); }
+  .split { display: grid; grid-template-columns: 1.6fr 1fr; gap: 20px; }
+  @media (max-width: 860px) { .split { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Pulseboard</h1>
+    <div class="live" id="live" data-on="false">
+      <span class="live__dot"></span><span id="live-label">connecting</span>
+    </div>
+  </header>
+
+  <section class="grid" aria-label="Key metrics">
+    {% for card in cards %}
+    <article class="card" data-metric="{{ card.key }}">
+      <p class="card__label">{{ card.label }}</p>
+      <p class="card__value"><span data-role="value">{{ card.latest }}</span><span class="card__unit">{{ card.unit }}</span></p>
+      <p class="card__delta" data-trend="{{ card.trend }}" data-role="delta">{{ card.delta }} ({{ card.delta_pct }})</p>
+      {{ card.spark | safe }}
+    </article>
+    {% endfor %}
+  </section>
+
+  <div class="split">
+    <section class="panel">
+      <p class="panel__title">Requests per minute</p>
+      {{ chart | safe }}
+    </section>
+    <section class="panel">
+      <p class="panel__title">Current values</p>
+      {{ breakdown | safe }}
+    </section>
+  </div>
+</div>
+
+<script>
+// Progressive enhancement: the page is complete without this script.
+(function () {
+  const live = document.getElementById("live");
+  const label = document.getElementById("live-label");
+  if (!window.EventSource) { label.textContent = "static"; return; }
+  const source = new EventSource("/api/stream");
+  source.onopen = () => { live.dataset.on = "true"; label.textContent = "live"; };
+  source.onerror = () => { live.dataset.on = "false"; label.textContent = "reconnecting"; };
+  source.onmessage = (event) => {
+    const payload = JSON.parse(event.data);
+    for (const [key, value] of Object.entries(payload)) {
+      const card = document.querySelector(`.card[data-metric="${key}"]`);
+      if (!card) continue;
+      const valueNode = card.querySelector('[data-role="value"]');
+      const previous = parseFloat(valueNode.textContent.replace(/,/g, ""));
+      valueNode.textContent = value.toLocaleString(undefined, { maximumFractionDigits: 1 });
+      const delta = value - previous;
+      const deltaNode = card.querySelector('[data-role="delta"]');
+      const pct = previous ? (delta / Math.abs(previous)) * 100 : 0;
+      deltaNode.textContent = `${delta >= 0 ? "+" : ""}${delta.toFixed(1)} (${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%)`;
+      deltaNode.dataset.trend = Math.abs(pct) < 0.5 ? "flat" : (delta > 0 ? "up" : "down");
+    }
+  };
+})();
+</script>
+</body>
+</html>
